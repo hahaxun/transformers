@@ -52,6 +52,7 @@ if is_timm_available():
 logger = logging.get_logger(__name__)
 
 _CONFIG_FOR_DOC = "DetrConfig"
+_CHECKPOINT_FOR_DOC = "facebook/detr-resnet-50"
 
 DETR_PRETRAINED_MODEL_ARCHIVE_LIST = [
     "facebook/detr-resnet-50",
@@ -150,7 +151,7 @@ class DetrObjectDetectionOutput(ModelOutput):
             unnormalized bounding boxes.
         auxiliary_outputs (:obj:`list[Dict]`, `optional`):
             Optional, only returned when auxilary losses are activated (i.e. :obj:`config.auxiliary_loss` is set to
-            `True`) and labels are provided. It is a list of dictionnaries containing the two above keys (:obj:`logits`
+            `True`) and labels are provided. It is a list of dictionaries containing the two above keys (:obj:`logits`
             and :obj:`pred_boxes`) for each decoder layer.
         last_hidden_state (:obj:`torch.FloatTensor` of shape :obj:`(batch_size, sequence_length, hidden_size)`, `optional`):
             Sequence of hidden-states at the output of the last layer of the decoder of the model.
@@ -217,8 +218,8 @@ class DetrSegmentationOutput(ModelOutput):
             :meth:`~transformers.DetrFeatureExtractor.post_process_panoptic` to evaluate instance and panoptic
             segmentation masks respectively.
         auxiliary_outputs (:obj:`list[Dict]`, `optional`):
-            Optional, only returned when auxilary losses are activated (i.e. :obj:`config.auxiliary_loss` is set to
-            `True`) and labels are provided. It is a list of dictionnaries containing the two above keys (:obj:`logits`
+            Optional, only returned when auxiliary losses are activated (i.e. :obj:`config.auxiliary_loss` is set to
+            `True`) and labels are provided. It is a list of dictionaries containing the two above keys (:obj:`logits`
             and :obj:`pred_boxes`) for each decoder layer.
         last_hidden_state (:obj:`torch.FloatTensor` of shape :obj:`(batch_size, sequence_length, hidden_size)`, `optional`):
             Sequence of hidden-states at the output of the last layer of the decoder of the model.
@@ -782,6 +783,7 @@ class DetrClassificationHead(nn.Module):
 class DetrPreTrainedModel(PreTrainedModel):
     config_class = DetrConfig
     base_model_prefix = "model"
+    supports_gradient_checkpointing = True
 
     def _init_weights(self, module):
         std = self.config.init_std
@@ -806,6 +808,10 @@ class DetrPreTrainedModel(PreTrainedModel):
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
 
+    def _set_gradient_checkpointing(self, module, value=False):
+        if isinstance(module, DetrDecoder):
+            module.gradient_checkpointing = value
+
 
 DETR_START_DOCSTRING = r"""
     This model inherits from :class:`~transformers.PreTrainedModel`. Check the superclass documentation for the generic
@@ -828,8 +834,8 @@ DETR_INPUTS_DOCSTRING = r"""
         pixel_values (:obj:`torch.FloatTensor` of shape :obj:`(batch_size, num_channels, height, width)`):
             Pixel values. Padding will be ignored by default should you provide it.
 
-            Pixel values can be obtained using :class:`~transformers.DetrTokenizer`. See
-            :meth:`transformers.DetrTokenizer.__call__` for details.
+            Pixel values can be obtained using :class:`~transformers.DetrFeatureExtractor`. See
+            :meth:`transformers.DetrFeatureExtractor.__call__` for details.
 
         pixel_mask (:obj:`torch.LongTensor` of shape :obj:`(batch_size, height, width)`, `optional`):
             Mask to avoid performing attention on padding pixel values. Mask values selected in ``[0, 1]``:
@@ -990,13 +996,13 @@ class DetrDecoder(DetrPreTrainedModel):
         super().__init__(config)
         self.dropout = config.dropout
         self.layerdrop = config.decoder_layerdrop
-        self.max_target_positions = config.max_position_embeddings
 
         self.layers = nn.ModuleList([DetrDecoderLayer(config) for _ in range(config.decoder_layers)])
         # in DETR, the decoder uses layernorm after the last decoder layer output
         self.layernorm = nn.LayerNorm(config.d_model)
 
         self.init_weights()
+        self.gradient_checkpointing = False
 
     def forward(
         self,
@@ -1084,7 +1090,7 @@ class DetrDecoder(DetrPreTrainedModel):
             if self.training and (dropout_probability < self.layerdrop):
                 continue
 
-            if getattr(self.config, "gradient_checkpointing", False) and self.training:
+            if self.gradient_checkpointing and self.training:
 
                 def create_custom_forward(module):
                     def custom_forward(*inputs):
